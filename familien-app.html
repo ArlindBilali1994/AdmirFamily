@@ -14,6 +14,8 @@
 <!-- Firebase (compat-Version, funktioniert mit normalen <script>-Tags) -->
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+<!-- EmailJS, zum Verschicken von E-Mail-Benachrichtigungen direkt aus dem Browser -->
+<script src="https://cdn.jsdelivr.net/npm/@emailjs/browser@4/dist/email.min.js"></script>
 
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,700&family=Karla:wght@400;500;700&display=swap');
@@ -26,7 +28,9 @@
 </style>
 </head>
 <body>
-<div id="root"></div>
+<div id="root">
+  <div style="display:flex;align-items:center;justify-content:center;height:100vh;font-family:sans-serif;color:#2C4A3E;">Lädt…</div>
+</div>
 
 <script type="text/babel" data-presets="react">
 
@@ -45,6 +49,28 @@ const firebaseConfig = {
 firebase.initializeApp(firebaseConfig);
 const db = firebase.firestore();
 
+// ====== HIER DEINE EMAILJS-ZUGANGSDATEN EINTRAGEN ======
+const EMAILJS_PUBLIC_KEY = "cEMBgSYNnf7Tr_nsr";
+const EMAILJS_SERVICE_ID = "service_cpsl06i";
+const EMAILJS_TEMPLATE_ID = "template_9uxzf6s";
+// =========================================================
+if (typeof emailjs !== "undefined" && EMAILJS_PUBLIC_KEY !== "DEIN_PUBLIC_KEY") {
+  emailjs.init({ publicKey: EMAILJS_PUBLIC_KEY });
+}
+
+function notifyByEmail(users, exceptKey, subject, message) {
+  if (typeof emailjs === "undefined" || EMAILJS_PUBLIC_KEY === "DEIN_PUBLIC_KEY") return;
+  Object.entries(users).forEach(([key, u]) => {
+    if (key === exceptKey || !u.email) return;
+    emailjs.send(EMAILJS_SERVICE_ID, EMAILJS_TEMPLATE_ID, {
+      to_email: u.email,
+      to_name: u.name,
+      subject: subject,
+      message: message,
+    }).catch(err => console.error("E-Mail-Versand fehlgeschlagen:", err));
+  });
+}
+
 const { useState, useEffect, useRef } = React;
 const AVATAR_COLORS = ["#A44A5D", "#2C4A3E", "#8FA888", "#C9975A", "#5A7A9E"];
 
@@ -58,6 +84,7 @@ function Tape() {
 
 function App() {
   const [ready, setReady] = useState(false);
+  const [loadError, setLoadError] = useState(null);
   const [users, setUsers] = useState({});
   const [messages, setMessages] = useState([]);
   const [events, setEvents] = useState([]);
@@ -66,6 +93,7 @@ function App() {
   const [tab, setTab] = useState("home");
   const [showAdd, setShowAdd] = useState(false);
   const [newName, setNewName] = useState("");
+  const [newEmail, setNewEmail] = useState("");
   const [authError, setAuthError] = useState("");
   const [notifPermission, setNotifPermission] = useState(typeof Notification !== "undefined" ? Notification.permission : "unsupported");
   const [unread, setUnread] = useState({ messages: 0, calendar: 0, todos: 0 });
@@ -86,12 +114,17 @@ function App() {
   };
 
   useEffect(() => {
+    const onErr = (label) => (err) => {
+      console.error(label, err);
+      setLoadError((err && err.code) ? label + ": " + err.code : label + ": " + String(err));
+    };
+
     const unsubUsers = db.collection("users").onSnapshot(snap => {
       const u = {};
       snap.forEach(d => { u[d.id] = d.data(); });
       setUsers(u);
       firstLoad.current.users = false;
-    });
+    }, onErr("Nutzer laden"));
 
     const unsubMessages = db.collection("messages").orderBy("ts").onSnapshot(snap => {
       const list = [];
@@ -109,7 +142,7 @@ function App() {
         });
       }
       firstLoad.current.messages = false;
-    });
+    }, onErr("Nachrichten laden"));
 
     const unsubEvents = db.collection("events").orderBy("date").onSnapshot(snap => {
       const list = [];
@@ -127,7 +160,7 @@ function App() {
         });
       }
       firstLoad.current.events = false;
-    });
+    }, onErr("Termine laden"));
 
     const unsubTodos = db.collection("todos").onSnapshot(snap => {
       const list = [];
@@ -146,10 +179,19 @@ function App() {
       }
       firstLoad.current.todos = false;
       setReady(true);
-    });
+    }, onErr("Aufgaben laden"));
 
     return () => { unsubUsers(); unsubMessages(); unsubEvents(); unsubTodos(); };
   }, []);
+
+  useEffect(() => {
+    const timeout = setTimeout(() => {
+      if (!ready && !loadError) {
+        setLoadError("Zeitüberschreitung: Firestore antwortet nicht. Prüfe die Firestore-Regeln in der Firebase-Konsole.");
+      }
+    }, 8000);
+    return () => clearTimeout(timeout);
+  }, [ready, loadError]);
 
   useEffect(() => {
     if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
@@ -174,24 +216,27 @@ function App() {
     e.preventDefault();
     setAuthError("");
     const name = newName.trim();
+    const email = newEmail.trim();
     if (!name) { setAuthError("Bitte einen Namen eingeben."); return; }
     const key = name.toLowerCase();
     if (users[key]) { setAuthError("Diesen Namen gibt es schon."); return; }
     if (Object.keys(users).length >= 8) { setAuthError("Maximale Anzahl an Mitgliedern erreicht."); return; }
     const color = AVATAR_COLORS[Object.keys(users).length % AVATAR_COLORS.length];
-    await db.collection("users").doc(key).set({ name, color });
-    setNewName(""); setShowAdd(false);
+    await db.collection("users").doc(key).set({ name, color, email: email || null });
+    setNewName(""); setNewEmail(""); setShowAdd(false);
     setSession(key); setTab("home"); requestNotifPermission();
   };
 
   const sendMessage = async (text) => {
     if (!text.trim()) return;
     await db.collection("messages").add({ author: session, text: text.trim(), ts: Date.now() });
+    notifyByEmail(users, session, `Neue Nachricht von ${(users[session] || {}).name || "?"}`, text.trim());
   };
 
   const addEvent = async (title, date, time) => {
     if (!title.trim() || !date) return;
     await db.collection("events").add({ title: title.trim(), date, time: time || "", author: session });
+    notifyByEmail(users, session, "Neuer Termin", `${title.trim()} am ${date}${time ? " um " + time : ""}`);
   };
 
   const deleteEvent = async (id) => db.collection("events").doc(id).delete();
@@ -199,6 +244,7 @@ function App() {
   const addTodo = async (text) => {
     if (!text.trim()) return;
     await db.collection("todos").add({ text: text.trim(), done: false, author: session });
+    notifyByEmail(users, session, "Neue Aufgabe", text.trim());
   };
 
   const toggleTodo = async (id, done) => db.collection("todos").doc(id).update({ done: !done });
@@ -231,7 +277,16 @@ function App() {
   );
 
   if (!ready) {
-    return <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: 500, color: "#2B2620" }}>Lädt…</div>;
+    return (
+      <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: 500, color: "#2B2620", padding: 24, textAlign: "center" }}>
+        <div>Lädt…</div>
+        {loadError && (
+          <div style={{ marginTop: 16, background: "#FBEAEA", color: "#A44A5D", padding: "12px 16px", borderRadius: 10, fontSize: 13, maxWidth: 320 }}>
+            {loadError}
+          </div>
+        )}
+      </div>
+    );
   }
 
   if (!session) {
@@ -277,6 +332,8 @@ function App() {
             {showAdd && (
               <form onSubmit={addMember}>
                 <input value={newName} onChange={e => setNewName(e.target.value)} autoFocus placeholder="Name eingeben"
+                  style={{ width: "100%", padding: "10px 12px", borderRadius: 10, border: "1px solid #E4DCC9", marginBottom: 10, fontSize: 15 }} />
+                <input value={newEmail} onChange={e => setNewEmail(e.target.value)} type="email" placeholder="E-Mail (für Benachrichtigungen, optional)"
                   style={{ width: "100%", padding: "10px 12px", borderRadius: 10, border: "1px solid #E4DCC9", marginBottom: 10, fontSize: 15 }} />
                 {authError && <div style={{ color: "#A44A5D", fontSize: 13, marginBottom: 10 }}>{authError}</div>}
                 <div style={{ display: "flex", gap: 8 }}>
