@@ -89,13 +89,16 @@ function App() {
   const [messages, setMessages] = useState([]);
   const [events, setEvents] = useState([]);
   const [todos, setTodos] = useState([]);
-  const [session, setSession] = useState(null);
+  const [session, setSession] = useState(() => {
+    try { return localStorage.getItem("familie_session") || null; } catch (e) { return null; }
+  });
   const [tab, setTab] = useState("home");
   const [showAdd, setShowAdd] = useState(false);
   const [newName, setNewName] = useState("");
   const [newEmail, setNewEmail] = useState("");
   const [authError, setAuthError] = useState("");
   const [notifPermission, setNotifPermission] = useState(typeof Notification !== "undefined" ? Notification.permission : "unsupported");
+  const [usersReady, setUsersReady] = useState(false);
   const [unread, setUnread] = useState({ messages: 0, calendar: 0, todos: 0 });
   const [showInstallHelp, setShowInstallHelp] = useState(false);
   const scrollRef = useRef(null);
@@ -119,11 +122,15 @@ function App() {
       setLoadError((err && err.code) ? label + ": " + err.code : label + ": " + String(err));
     };
 
-    const unsubUsers = db.collection("users").onSnapshot(snap => {
+    const unsubUsers = db.collection("users").onSnapshot(async snap => {
       const u = {};
       snap.forEach(d => { u[d.id] = d.data(); });
+      if (Object.keys(u).length === 0 && firstLoad.current.users) {
+        await db.collection("users").doc("admin").set({ name: "Admin", color: AVATAR_COLORS[0], email: null });
+      }
       setUsers(u);
       firstLoad.current.users = false;
+      setUsersReady(true);
     }, onErr("Nutzer laden"));
 
     const unsubMessages = db.collection("messages").orderBy("ts").onSnapshot(snap => {
@@ -198,6 +205,13 @@ function App() {
   }, [messages, tab]);
 
   useEffect(() => {
+    if (usersReady && session && !users[session]) {
+      setSession(null);
+      try { localStorage.removeItem("familie_session"); } catch (e) {}
+    }
+  }, [usersReady, users, session]);
+
+  useEffect(() => {
     if (tab === "messages") setUnread(u => ({ ...u, messages: 0 }));
     if (tab === "calendar") setUnread(u => ({ ...u, calendar: 0 }));
     if (tab === "todos") setUnread(u => ({ ...u, todos: 0 }));
@@ -209,8 +223,14 @@ function App() {
     }
   };
 
-  const login = (key) => { setSession(key); setTab("home"); requestNotifPermission(); };
-  const logout = () => setSession(null);
+  const login = (key) => {
+    setSession(key); setTab("home"); requestNotifPermission();
+    try { localStorage.setItem("familie_session", key); } catch (e) {}
+  };
+  const logout = () => {
+    setSession(null);
+    try { localStorage.removeItem("familie_session"); } catch (e) {}
+  };
 
   const addMember = async (e) => {
     e.preventDefault();
@@ -225,6 +245,7 @@ function App() {
     await db.collection("users").doc(key).set({ name, color, email: email || null });
     setNewName(""); setNewEmail(""); setShowAdd(false);
     setSession(key); setTab("home"); requestNotifPermission();
+    try { localStorage.setItem("familie_session", key); } catch (e) {}
   };
 
   const sendMessage = async (text) => {
